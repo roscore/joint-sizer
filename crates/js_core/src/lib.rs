@@ -1,23 +1,175 @@
-//! Planar serial-chain joint sizing: gravity torque, distal inertia, dynamic torque and
-//! actuator (motor + gearbox) fit checks. Pure Rust, no dependencies.
+//! Spatial (3D) serial-chain joint sizing: gravity torque, inertia about each joint axis, dynamic
+//! torque and actuator (motor + gearbox) fit checks, with a worst-case pose search inside joint
+//! limits. Pure Rust, no dependencies.
 //!
-//! Model: revolute joints in a vertical plane, gravity along -Y. Link `i` runs from joint `i`
-//! to joint `i + 1` (the last link ends at the tip). Each link is a uniform rod; the actuator of
-//! joint `i` is a point mass sitting at joint `i`; the payload is a point mass at the tip.
-//! Angles are relative (joint `i` rotates link `i` relative to link `i - 1`), 0 = horizontal.
+//! Model
+//! - World frame: Z up, gravity along -Z.
+//! - Joint `i` rotates about one axis of its local frame (X, Y or Z). Frames compose:
+//!   R_i = R_{i-1} · Rot(axis_i, q_i), with R_{-1} = identity.
+//! - Link `i` starts at joint `i` and points along a chosen local direction (±X, ±Y, ±Z) of
+//!   frame `i`; joint `i + 1` sits at its end. The last link ends at the tip.
+//! - Each link is a thin uniform rod. The actuator of joint `i` is a point mass at joint `i`
+//!   (for i > 0 it rides on link `i - 1`). The payload is a point mass at the tip, optionally
+//!   offset along the local +Z of the last frame.
 
 /// Standard gravity, m/s².
 pub const G: f64 = 9.80665;
+/// Maximum number of joints supported by the UI.
+pub const MAX_JOINTS: usize = 7;
+/// Default gearbox efficiency.
+pub const DEFAULT_EFFICIENCY: f64 = 0.85;
 
-/// One link of the chain plus the actuator that drives it.
+pub type V3 = [f64; 3];
+type M3 = [[f64; 3]; 3];
+
+fn add(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn scale(a: V3, s: f64) -> V3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+fn mm(a: &M3, b: &M3) -> M3 {
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    r
+}
+fn mv(a: &M3, v: V3) -> V3 {
+    [dot(a[0], v), dot(a[1], v), dot(a[2], v)]
+}
+const I3: M3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// Joint rotation axis in the joint's local frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+impl Axis {
+    pub fn unit(self) -> V3 {
+        match self {
+            Axis::X => [1.0, 0.0, 0.0],
+            Axis::Y => [0.0, 1.0, 0.0],
+            Axis::Z => [0.0, 0.0, 1.0],
+        }
+    }
+    fn rot(self, q: f64) -> M3 {
+        let (s, c) = q.sin_cos();
+        match self {
+            Axis::X => [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]],
+            Axis::Y => [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]],
+            Axis::Z => [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]],
+        }
+    }
+    pub fn code(self) -> &'static str {
+        match self {
+            Axis::X => "x",
+            Axis::Y => "y",
+            Axis::Z => "z",
+        }
+    }
+    pub fn from_code(s: &str) -> Axis {
+        match s {
+            "x" => Axis::X,
+            "z" => Axis::Z,
+            _ => Axis::Y,
+        }
+    }
+}
+
+/// Direction of a link in its joint's local frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    Px,
+    Nx,
+    Py,
+    Ny,
+    Pz,
+    Nz,
+}
+
+impl Dir {
+    pub const ALL: [Dir; 6] = [Dir::Px, Dir::Nx, Dir::Py, Dir::Ny, Dir::Pz, Dir::Nz];
+    pub fn unit(self) -> V3 {
+        match self {
+            Dir::Px => [1.0, 0.0, 0.0],
+            Dir::Nx => [-1.0, 0.0, 0.0],
+            Dir::Py => [0.0, 1.0, 0.0],
+            Dir::Ny => [0.0, -1.0, 0.0],
+            Dir::Pz => [0.0, 0.0, 1.0],
+            Dir::Nz => [0.0, 0.0, -1.0],
+        }
+    }
+    pub fn code(self) -> &'static str {
+        match self {
+            Dir::Px => "+x",
+            Dir::Nx => "-x",
+            Dir::Py => "+y",
+            Dir::Ny => "-y",
+            Dir::Pz => "+z",
+            Dir::Nz => "-z",
+        }
+    }
+    pub fn from_code(s: &str) -> Dir {
+        Dir::ALL.iter().copied().find(|d| d.code() == s).unwrap_or(Dir::Px)
+    }
+}
+
+/// One joint, the link it drives and its actuator mass.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Link {
-    /// Link length in metres.
+pub struct Joint {
+    pub axis: Axis,
+    pub dir: Dir,
+    /// Link length, m.
     pub length: f64,
-    /// Link mass in kg (uniform rod).
+    /// Link mass, kg (thin uniform rod).
     pub mass: f64,
-    /// Mass of the actuator at the proximal joint of this link, kg.
+    /// Actuator mass at this joint, kg.
     pub actuator_mass: f64,
+    /// Joint limits, degrees.
+    pub min_deg: f64,
+    pub max_deg: f64,
+}
+
+impl Joint {
+    pub fn new(axis: Axis, dir: Dir, length: f64, mass: f64, actuator_mass: f64) -> Joint {
+        Joint { axis, dir, length, mass, actuator_mass, min_deg: -180.0, max_deg: 180.0 }
+    }
+    pub fn limits(mut self, min_deg: f64, max_deg: f64) -> Joint {
+        self.min_deg = min_deg;
+        self.max_deg = max_deg;
+        self
+    }
+    fn lo(&self) -> f64 {
+        self.min_deg.min(self.max_deg)
+    }
+    fn hi(&self) -> f64 {
+        self.min_deg.max(self.max_deg)
+    }
+}
+
+/// A serial chain with a tip payload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Chain {
+    pub joints: Vec<Joint>,
+    /// Payload mass at the tip, kg.
+    pub payload: f64,
+    /// Payload centre-of-mass offset from the tip along the last frame's local +Z, m.
+    pub payload_offset: f64,
 }
 
 /// Motor + gearbox entered by the user for one joint.
@@ -35,40 +187,6 @@ pub struct Actuator {
     pub efficiency: f64,
 }
 
-/// Orientation of a joint axis when the chain is fully extended along +X.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    /// Horizontal axis, perpendicular to the arm (shoulder, elbow, knee). Gravity-loaded.
-    Pitch,
-    /// Vertical axis (base turntable, wrist yaw). No gravity torque, full swing inertia.
-    Yaw,
-    /// Axis along the arm (forearm / wrist roll). Loaded only through the roll offset.
-    Roll,
-}
-
-impl Axis {
-    pub fn code(self) -> &'static str {
-        match self {
-            Axis::Pitch => "pitch",
-            Axis::Yaw => "yaw",
-            Axis::Roll => "roll",
-        }
-    }
-    pub fn from_code(s: &str) -> Axis {
-        match s {
-            "yaw" => Axis::Yaw,
-            "roll" => Axis::Roll,
-            _ => Axis::Pitch,
-        }
-    }
-}
-
-/// Default distance of the distal centre of mass from a roll axis, m (gripper / tool offset).
-pub const DEFAULT_ROLL_OFFSET: f64 = 0.05;
-
-/// Default gearbox efficiency.
-pub const DEFAULT_EFFICIENCY: f64 = 0.85;
-
 /// Motion targets shared by all joints.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Motion {
@@ -80,80 +198,145 @@ pub struct Motion {
     pub safety: f64,
 }
 
-/// Point masses of the chain at a pose: (x, y, mass, own inertia about its COM, first joint index
-/// whose torque it loads). A mass "belongs" to joint j's load when its index >= j.
 struct Mass {
-    x: f64,
-    y: f64,
+    c: V3,
     m: f64,
-    i_com: f64,
-    /// The mass loads joint j for all j <= `distal_of`.
+    /// Thin-rod direction and length (None = point mass).
+    rod: Option<(V3, f64)>,
+    /// The mass loads joints 0..=distal_of.
     distal_of: usize,
 }
 
-/// Joint positions (n + 1 points including the tip) for relative angles in degrees.
-pub fn joint_positions(links: &[Link], angles_deg: &[f64]) -> Vec<(f64, f64)> {
-    let mut pts = Vec::with_capacity(links.len() + 1);
-    let (mut x, mut y, mut th) = (0.0, 0.0, 0.0);
-    pts.push((x, y));
-    for (i, l) in links.iter().enumerate() {
-        th += angles_deg.get(i).copied().unwrap_or(0.0).to_radians();
-        x += l.length * th.cos();
-        y += l.length * th.sin();
-        pts.push((x, y));
-    }
-    pts
+/// The chain evaluated at one pose.
+pub struct Pose {
+    /// Joint positions plus the tip (n + 1 points), world frame.
+    pub points: Vec<V3>,
+    /// World-frame unit axis of each joint.
+    pub axes: Vec<V3>,
+    /// Payload centre of mass.
+    pub payload_at: V3,
+    masses: Vec<Mass>,
 }
 
-fn masses(links: &[Link], angles_deg: &[f64], payload: f64) -> (Vec<(f64, f64)>, Vec<Mass>) {
-    let pts = joint_positions(links, angles_deg);
-    let mut ms = Vec::new();
-    for (i, l) in links.iter().enumerate() {
-        let (a, b) = (pts[i], pts[i + 1]);
-        ms.push(Mass {
-            x: (a.0 + b.0) / 2.0,
-            y: (a.1 + b.1) / 2.0,
-            m: l.mass,
-            i_com: l.mass * l.length * l.length / 12.0,
-            distal_of: i,
-        });
-        // The actuator at joint i rides on link i-1: it loads joints 0..i-1, not joint i itself
-        // (it sits on that joint's axis). Joint 0's actuator sits on the base and loads nothing.
+/// Forward kinematics at joint angles in degrees (missing entries = 0).
+pub fn pose(chain: &Chain, q_deg: &[f64]) -> Pose {
+    let n = chain.joints.len();
+    let mut r = I3;
+    let mut p = [0.0; 3];
+    let mut points = vec![p];
+    let mut axes = Vec::with_capacity(n);
+    let mut masses = Vec::new();
+    for (i, j) in chain.joints.iter().enumerate() {
+        r = mm(&r, &j.axis.rot(q_deg.get(i).copied().unwrap_or(0.0).to_radians()));
+        axes.push(mv(&r, j.axis.unit()));
+        let d = mv(&r, j.dir.unit());
+        let next = add(p, scale(d, j.length));
+        masses.push(Mass { c: scale(add(p, next), 0.5), m: j.mass, rod: Some((d, j.length)), distal_of: i });
         if i > 0 {
-            ms.push(Mass { x: a.0, y: a.1, m: l.actuator_mass, i_com: 0.0, distal_of: i - 1 });
+            masses.push(Mass { c: p, m: j.actuator_mass, rod: None, distal_of: i - 1 });
         }
+        p = next;
+        points.push(p);
     }
-    if let Some(&tip) = pts.last() {
-        if !links.is_empty() {
-            ms.push(Mass { x: tip.0, y: tip.1, m: payload, i_com: 0.0, distal_of: links.len() - 1 });
-        }
+    let payload_at = add(p, mv(&r, [0.0, 0.0, chain.payload_offset]));
+    if n > 0 {
+        masses.push(Mass { c: payload_at, m: chain.payload, rod: None, distal_of: n - 1 });
     }
-    (pts, ms)
+    Pose { points, axes, payload_at, masses }
 }
 
-/// Static gravity torque at each joint (N·m, magnitude) for the given pose.
-pub fn gravity_torques(links: &[Link], angles_deg: &[f64], payload: f64) -> Vec<f64> {
-    let (pts, ms) = masses(links, angles_deg, payload);
-    (0..links.len())
-        .map(|j| {
-            let jx = pts[j].0;
-            ms.iter().filter(|m| m.distal_of >= j).map(|m| m.m * G * (m.x - jx)).sum::<f64>().abs()
-        })
-        .collect()
+impl Pose {
+    /// (|gravity torque|, inertia) about joint `j`'s axis.
+    pub fn load(&self, j: usize) -> (f64, f64) {
+        let a = self.axes[j];
+        let o = self.points[j];
+        let mut tau = 0.0;
+        let mut inertia = 0.0;
+        for m in self.masses.iter().filter(|m| m.distal_of >= j) {
+            let r = sub(m.c, o);
+            tau += dot(a, cross(r, [0.0, 0.0, -m.m * G]));
+            let ra = dot(r, a);
+            inertia += m.m * (dot(r, r) - ra * ra).max(0.0);
+            if let Some((u, l)) = m.rod {
+                let ua = dot(u, a);
+                inertia += m.m * l * l / 12.0 * (1.0 - ua * ua).max(0.0);
+            }
+        }
+        (tau.abs(), inertia)
+    }
 }
 
-/// Inertia of everything distal to each joint about that joint's axis (kg·m², parallel axis).
-pub fn distal_inertias(links: &[Link], angles_deg: &[f64], payload: f64) -> Vec<f64> {
-    let (pts, ms) = masses(links, angles_deg, payload);
-    (0..links.len())
-        .map(|j| {
-            let (jx, jy) = pts[j];
-            ms.iter()
-                .filter(|m| m.distal_of >= j)
-                .map(|m| m.i_com + m.m * ((m.x - jx).powi(2) + (m.y - jy).powi(2)))
-                .sum()
-        })
-        .collect()
+/// Deterministic pseudo-random numbers in [0, 1).
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> f64 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Maximise `|τ_g| + weight · I` about joint `j` over all poses inside the joint limits.
+/// Coordinate search on a 25-point grid per joint from several seeds, then step-halving refine.
+/// Returns (best pose in degrees, |τ_g| there, I there).
+pub fn worst_pose(chain: &Chain, j: usize, weight: f64) -> (Vec<f64>, f64, f64) {
+    let n = chain.joints.len();
+    let eval = |q: &[f64]| {
+        let (t, i) = pose(chain, q).load(j);
+        (t + weight * i, t, i)
+    };
+    let clamp = |k: usize, v: f64| v.clamp(chain.joints[k].lo(), chain.joints[k].hi());
+    let mut seeds: Vec<Vec<f64>> = vec![(0..n).map(|k| clamp(k, 0.0)).collect()];
+    let mut rng = Lcg(0x5eed + j as u64);
+    for _ in 0..12 {
+        seeds.push((0..n).map(|k| {
+            let (lo, hi) = (chain.joints[k].lo(), chain.joints[k].hi());
+            lo + (hi - lo) * rng.next()
+        }).collect());
+    }
+    let mut best = (seeds[0].clone(), f64::NEG_INFINITY, 0.0, 0.0);
+    for mut q in seeds {
+        let mut cur = eval(&q).0;
+        for _ in 0..3 {
+            for k in 0..n {
+                let (lo, hi) = (chain.joints[k].lo(), chain.joints[k].hi());
+                for s in 0..=24 {
+                    let old = q[k];
+                    q[k] = lo + (hi - lo) * s as f64 / 24.0;
+                    let v = eval(&q).0;
+                    if v > cur + 1e-12 {
+                        cur = v;
+                    } else {
+                        q[k] = old;
+                    }
+                }
+            }
+        }
+        let mut step = 7.5;
+        while step > 0.02 {
+            let mut improved = false;
+            for k in 0..n {
+                for sgn in [-1.0, 1.0] {
+                    let old = q[k];
+                    q[k] = clamp(k, old + sgn * step);
+                    let v = eval(&q).0;
+                    if v > cur + 1e-12 {
+                        cur = v;
+                        improved = true;
+                    } else {
+                        q[k] = old;
+                    }
+                }
+            }
+            if !improved {
+                step /= 2.0;
+            }
+        }
+        if cur > best.1 {
+            let (v, t, i) = eval(&q);
+            best = (q, v, t, i);
+        }
+    }
+    (best.0, best.2, best.3)
 }
 
 /// Requirement for one joint (safety factor already applied to torques).
@@ -161,57 +344,44 @@ pub fn distal_inertias(links: &[Link], angles_deg: &[f64], payload: f64) -> Vec<
 pub struct Requirement {
     /// Worst-case static gravity torque, N·m (no safety factor).
     pub gravity: f64,
-    /// Distal inertia about the joint, fully extended, kg·m².
+    /// Inertia about the joint axis at the peak-torque pose, kg·m².
     pub inertia: f64,
-    /// Continuous torque needed = gravity × SF.
+    /// Continuous torque needed = worst gravity × SF.
     pub cont: f64,
-    /// Peak torque needed = (gravity + I·α) × SF.
+    /// Peak torque needed = max over poses of (gravity + I·α) × SF.
     pub peak: f64,
     /// Output speed needed, rpm.
     pub rpm: f64,
 }
 
-/// Worst case for an all-pitch chain = fully extended horizontal (all angles 0), which maximises
-/// both the gravity moment arm and the distal inertia for every joint.
-pub fn requirements(links: &[Link], payload: f64, motion: Motion) -> Vec<Requirement> {
-    requirements_axes(links, &[], payload, motion, DEFAULT_ROLL_OFFSET)
+/// Requirement plus the poses (degrees) where the worst cases occur.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointLoad {
+    pub req: Requirement,
+    pub gravity_pose: Vec<f64>,
+    pub peak_pose: Vec<f64>,
 }
 
-/// Requirements with a per-joint axis type (missing entries = Pitch), fully extended chain.
-/// - Pitch: gravity torque and inertia about a horizontal axis.
-/// - Yaw: no gravity torque; same swing inertia (distances lie in the horizontal plane).
-/// - Roll: everything distal is lumped at `roll_offset` from the axis (worst case horizontal):
-///   torque = m·g·r, inertia = m·r². An approximation for wrists and tools.
-pub fn requirements_axes(links: &[Link], axes: &[Axis], payload: f64, motion: Motion, roll_offset: f64) -> Vec<Requirement> {
-    let zeros = vec![0.0; links.len()];
-    let tg = gravity_torques(links, &zeros, payload);
-    let inertia = distal_inertias(links, &zeros, payload);
-    let (_, ms) = masses(links, &zeros, payload);
+pub fn requirements(chain: &Chain, motion: Motion) -> Vec<JointLoad> {
     let rpm = rad_s_to_rpm(motion.omega);
-    let r = roll_offset.max(0.0);
-    (0..links.len())
+    (0..chain.joints.len())
         .map(|j| {
-            let (g, i) = match axes.get(j).copied().unwrap_or(Axis::Pitch) {
-                Axis::Pitch => (tg[j], inertia[j]),
-                Axis::Yaw => (0.0, inertia[j]),
-                Axis::Roll => {
-                    let m: f64 = ms.iter().filter(|m| m.distal_of >= j).map(|m| m.m).sum();
-                    (m * G * r, m * r * r)
-                }
+            let (gq, g, _) = worst_pose(chain, j, 0.0);
+            let (pq, pg, pi) = if motion.alpha > 0.0 {
+                worst_pose(chain, j, motion.alpha)
+            } else {
+                let (_, i) = pose(chain, &gq).load(j);
+                (gq.clone(), g, i)
             };
-            Requirement {
-                gravity: g,
-                inertia: i,
-                cont: g * motion.safety,
-                peak: (g + i * motion.alpha) * motion.safety,
-                rpm,
+            let peak = (pg + pi * motion.alpha).max(g);
+            JointLoad {
+                req: Requirement { gravity: g, inertia: pi, cont: g * motion.safety, peak: peak * motion.safety, rpm },
+                gravity_pose: gq,
+                peak_pose: pq,
             }
         })
         .collect()
 }
-
-/// Maximum number of joints supported by the UI.
-pub const MAX_JOINTS: usize = 7;
 
 /// Output side of a motor + gearbox.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,39 +445,50 @@ pub fn nm_to_kgfcm(t: f64) -> f64 {
     t * 100.0 / G
 }
 
-/// A ready-made chain: links, axis per joint, payload, actuator per joint.
-pub type Preset = (Vec<Link>, Vec<Axis>, f64, Vec<Actuator>);
-
-/// Example chains.
-pub fn preset(name: &str) -> Option<Preset> {
+/// Example chains with matching actuators.
+pub fn preset(name: &str) -> Option<(Chain, Vec<Actuator>)> {
     use Axis::*;
+    use Dir::*;
     let act = |c, p, rpm, n, e| Actuator { cont_torque: c, peak_torque: p, rpm, ratio: n, efficiency: e };
-    let l = |length, mass, actuator_mass| Link { length, mass, actuator_mass };
+    let j = Joint::new;
     match name {
+        // Base yaw + shoulder / elbow pitch.
         "desk_arm" => Some((
-            vec![l(0.25, 0.3, 0.4), l(0.20, 0.2, 0.3)],
-            vec![Pitch, Pitch],
-            0.5,
-            vec![act(0.3, 0.9, 3000.0, 50.0, 0.85), act(0.15, 0.45, 3000.0, 50.0, 0.85)],
+            Chain {
+                joints: vec![j(Z, Pz, 0.08, 0.2, 0.4), j(Y, Px, 0.25, 0.3, 0.4).limits(-90.0, 90.0), j(Y, Px, 0.20, 0.2, 0.3).limits(-150.0, 150.0)],
+                payload: 0.5,
+                payload_offset: 0.0,
+            },
+            vec![act(0.3, 0.9, 3000.0, 50.0, 0.85), act(0.3, 0.9, 3000.0, 50.0, 0.85), act(0.15, 0.45, 3000.0, 50.0, 0.85)],
         )),
+        // Hip roll + hip pitch + knee + ankle pitch, leg hanging down.
         "leg" => Some((
-            vec![l(0.40, 3.0, 1.0), l(0.40, 2.0, 0.8), l(0.10, 0.5, 0.5)],
-            vec![Pitch, Pitch, Pitch],
-            0.0,
-            vec![act(6.0, 18.0, 300.0, 9.0, 0.9), act(6.0, 18.0, 300.0, 9.0, 0.9), act(1.5, 4.5, 300.0, 9.0, 0.9)],
+            Chain {
+                joints: vec![
+                    j(X, Nz, 0.05, 0.5, 1.0).limits(-30.0, 30.0),
+                    j(Y, Nz, 0.40, 3.0, 1.0).limits(-120.0, 30.0),
+                    j(Y, Nz, 0.40, 2.0, 0.8).limits(0.0, 150.0),
+                    j(Y, Px, 0.12, 0.5, 0.5).limits(-45.0, 45.0),
+                ],
+                payload: 0.0,
+                payload_offset: 0.0,
+            },
+            vec![act(6.0, 18.0, 300.0, 9.0, 0.9), act(6.0, 18.0, 300.0, 9.0, 0.9), act(6.0, 18.0, 300.0, 9.0, 0.9), act(1.5, 4.5, 300.0, 9.0, 0.9)],
         )),
         // UR-style 6-DoF arm: base yaw, shoulder / elbow / wrist pitch, wrist yaw, tool roll.
         "arm6" => Some((
-            vec![
-                l(0.05, 0.5, 1.2),
-                l(0.30, 1.2, 0.9),
-                l(0.25, 0.8, 0.7),
-                l(0.08, 0.3, 0.4),
-                l(0.08, 0.3, 0.4),
-                l(0.05, 0.1, 0.3),
-            ],
-            vec![Yaw, Pitch, Pitch, Pitch, Yaw, Roll],
-            1.0,
+            Chain {
+                joints: vec![
+                    j(Z, Pz, 0.15, 1.0, 1.2),
+                    j(Y, Px, 0.30, 1.2, 0.9),
+                    j(Y, Px, 0.25, 0.8, 0.7),
+                    j(Y, Px, 0.08, 0.3, 0.4),
+                    j(Z, Px, 0.08, 0.3, 0.4),
+                    j(X, Px, 0.05, 0.1, 0.3),
+                ],
+                payload: 1.0,
+                payload_offset: 0.05,
+            },
             vec![
                 act(1.0, 3.0, 3000.0, 100.0, 0.8),
                 act(1.0, 3.0, 3000.0, 100.0, 0.8),
@@ -315,6 +496,31 @@ pub fn preset(name: &str) -> Option<Preset> {
                 act(0.2, 0.6, 3000.0, 100.0, 0.8),
                 act(0.2, 0.6, 3000.0, 100.0, 0.8),
                 act(0.2, 0.6, 3000.0, 100.0, 0.8),
+            ],
+        )),
+        // Franka-style 7-DoF arm (yaw/pitch alternating).
+        "arm7" => Some((
+            Chain {
+                joints: vec![
+                    j(Z, Pz, 0.33, 2.0, 1.5),
+                    j(Y, Pz, 0.0, 0.0, 1.2).limits(-105.0, 105.0),
+                    j(Z, Pz, 0.32, 1.5, 1.0),
+                    j(Y, Pz, 0.0, 0.0, 0.9).limits(-175.0, 0.0),
+                    j(Z, Pz, 0.38, 1.2, 0.7),
+                    j(Y, Px, 0.09, 0.3, 0.5).limits(0.0, 215.0),
+                    j(Z, Nz, 0.10, 0.2, 0.4),
+                ],
+                payload: 1.0,
+                payload_offset: 0.05,
+            },
+            vec![
+                act(1.5, 4.5, 3000.0, 100.0, 0.8),
+                act(1.5, 4.5, 3000.0, 100.0, 0.8),
+                act(1.0, 3.0, 3000.0, 100.0, 0.8),
+                act(1.0, 3.0, 3000.0, 100.0, 0.8),
+                act(0.4, 1.2, 3000.0, 100.0, 0.8),
+                act(0.4, 1.2, 3000.0, 100.0, 0.8),
+                act(0.4, 1.2, 3000.0, 100.0, 0.8),
             ],
         )),
         _ => None,

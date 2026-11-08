@@ -1,65 +1,86 @@
 use js_core::*;
+use Axis::*;
+use Dir::*;
 
 fn close(a: f64, b: f64, rel: f64) -> bool {
-    (a - b).abs() <= rel * b.abs().max(1e-12)
+    (a - b).abs() <= rel * b.abs().max(1e-9)
 }
 
-fn rod(length: f64, mass: f64) -> Link {
-    Link { length, mass, actuator_mass: 0.0 }
+fn chain(joints: Vec<Joint>, payload: f64) -> Chain {
+    Chain { joints, payload, payload_offset: 0.0 }
 }
 
-#[test]
-fn single_rod_horizontal_and_vertical() {
-    let links = [rod(1.0, 2.0)];
-    let t = gravity_torques(&links, &[0.0], 0.0);
-    assert!(close(t[0], 9.80665, 0.001), "{t:?}");
-    let v = gravity_torques(&links, &[90.0], 0.0);
-    assert!(v[0].abs() < 1e-9, "{v:?}");
-}
+const STILL: Motion = Motion { alpha: 0.0, omega: 0.0, safety: 1.0 };
 
 #[test]
-fn two_links_with_payload_sum_m_g_x() {
-    // 0.5 m + 0.5 m, 1 kg rods, 0.2 kg actuator at the elbow, 1 kg payload at the tip.
-    let links = [
-        Link { length: 0.5, mass: 1.0, actuator_mass: 0.0 },
-        Link { length: 0.5, mass: 1.0, actuator_mass: 0.2 },
-    ];
-    let t = gravity_torques(&links, &[0.0, 0.0], 1.0);
+fn planar_pitch_chain_matches_hand_calculation() {
+    // 0.5 m + 0.5 m, 1 kg rods, 0.2 kg actuator at the elbow, 1 kg payload; worst = horizontal.
+    let c = chain(vec![Joint::new(Y, Px, 0.5, 1.0, 0.0), Joint::new(Y, Px, 0.5, 1.0, 0.2)], 1.0);
+    let r = requirements(&c, STILL);
     let base = G * (1.0 * 0.25 + 0.2 * 0.5 + 1.0 * 0.75 + 1.0 * 1.0);
-    let elbow = G * (1.0 * 0.25 + 1.0 * 0.5); // elbow actuator sits on its own axis: excluded
-    assert!(close(t[0], base, 1e-9), "{} vs {}", t[0], base);
-    assert!(close(t[1], elbow, 1e-9), "{} vs {}", t[1], elbow);
+    let elbow = G * (1.0 * 0.25 + 1.0 * 0.5);
+    assert!(close(r[0].req.gravity, base, 1e-9), "{} vs {}", r[0].req.gravity, base);
+    assert!(close(r[1].req.gravity, elbow, 1e-9), "{} vs {}", r[1].req.gravity, elbow);
 }
 
 #[test]
-fn inertia_rod_about_end_and_point_mass() {
-    let i = distal_inertias(&[rod(1.2, 3.0)], &[0.0], 0.0);
-    assert!(close(i[0], 3.0 * 1.2 * 1.2 / 3.0, 1e-9));
-    let p = distal_inertias(&[rod(0.8, 0.0)], &[37.0], 2.0);
-    assert!(close(p[0], 2.0 * 0.8 * 0.8, 1e-9)); // pose does not change distance to the axis
+fn vertical_yaw_axis_never_sees_gravity() {
+    let c = chain(vec![Joint::new(Z, Pz, 0.1, 1.0, 0.0), Joint::new(Y, Px, 0.4, 1.0, 0.5), Joint::new(Y, Px, 0.3, 0.5, 0.3)], 1.0);
+    let r = requirements(&c, STILL);
+    assert!(r[0].req.gravity < 1e-9, "{}", r[0].req.gravity);
+    assert!(r[1].req.gravity > 1.0);
 }
 
 #[test]
-fn worst_case_bounds_other_poses() {
-    let links = [rod(0.4, 1.0), rod(0.3, 0.6), rod(0.2, 0.3)];
-    let worst = gravity_torques(&links, &[0.0; 3], 0.5);
-    for a in (-90..=90).step_by(15) {
-        for b in (-90..=90).step_by(30) {
-            let t = gravity_torques(&links, &[a as f64, b as f64, -(b as f64)], 0.5);
-            for j in 0..3 {
-                assert!(t[j] <= worst[j] + 1e-9, "joint {j} pose {a},{b}");
-            }
+fn rod_inertia_about_each_axis() {
+    // Rod along X spun about Z (end-on): m L² / 3.
+    let p = pose(&chain(vec![Joint::new(Z, Px, 1.2, 3.0, 0.0)], 0.0), &[0.0]);
+    assert!(close(p.load(0).1, 3.0 * 1.44 / 3.0, 1e-12));
+    // Same rod spun about its own axis: thin rod → 0, and no gravity torque.
+    let p = pose(&chain(vec![Joint::new(X, Px, 1.2, 3.0, 0.0)], 0.0), &[37.0]);
+    assert!(p.load(0).0 < 1e-12 && p.load(0).1 < 1e-12);
+    // Rod sticking out sideways from a roll axis behaves like a pitch joint.
+    let c = chain(vec![Joint::new(X, Py, 1.0, 2.0, 0.0)], 0.0);
+    let r = requirements(&c, Motion { alpha: 3.0, omega: 0.0, safety: 1.0 });
+    assert!(close(r[0].req.gravity, 2.0 * G * 0.5, 1e-9));
+    assert!(close(r[0].req.peak, 2.0 * G * 0.5 + 2.0 / 3.0 * 3.0, 1e-9));
+}
+
+#[test]
+fn joint_limits_bound_the_search() {
+    // Horizontal (0°) is outside [-90°, -80°]; the worst case is the -80° limit.
+    let c = chain(vec![Joint::new(Y, Px, 1.0, 2.0, 0.0).limits(-90.0, -80.0)], 0.0);
+    let r = &requirements(&c, STILL)[0];
+    assert!(close(r.req.gravity, 2.0 * G * 0.5 * 80f64.to_radians().cos(), 1e-9), "{}", r.req.gravity);
+    assert!(close(r.gravity_pose[0], -80.0, 1e-9));
+}
+
+#[test]
+fn payload_offset_loads_a_roll_joint() {
+    let c = Chain { joints: vec![Joint::new(X, Px, 0.1, 0.0, 0.0)], payload: 2.0, payload_offset: 0.05 };
+    let r = &requirements(&c, STILL)[0];
+    assert!(close(r.req.gravity, 2.0 * G * 0.05, 1e-9), "{}", r.req.gravity);
+}
+
+#[test]
+fn search_bounds_random_poses_on_six_dof_arm() {
+    let (c, _) = preset("arm6").unwrap();
+    let alpha = 4.0;
+    let r = requirements(&c, Motion { alpha, omega: 1.0, safety: 1.0 });
+    let mut s = 12345u64;
+    let mut rnd = || {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 360.0 - 180.0
+    };
+    for _ in 0..400 {
+        let q: Vec<f64> = (0..6).map(|_| rnd()).collect();
+        let p = pose(&c, &q);
+        for j in 0..6 {
+            let (t, i) = p.load(j);
+            assert!(t <= r[j].req.gravity * (1.0 + 1e-6) + 1e-9, "joint {j} gravity {t} > {}", r[j].req.gravity);
+            assert!(t + i * alpha <= r[j].req.peak * (1.0 + 1e-6) + 1e-9, "joint {j} peak");
         }
     }
-}
-
-#[test]
-fn requirements_apply_safety_and_dynamics() {
-    let links = [rod(1.0, 2.0)];
-    let r = requirements(&links, 0.0, Motion { alpha: 3.0, omega: 2.0 * std::f64::consts::PI, safety: 1.5 })[0];
-    assert!(close(r.cont, 9.80665 * 1.5, 1e-9));
-    assert!(close(r.peak, (9.80665 + 2.0 / 3.0 * 3.0) * 1.5, 1e-9));
-    assert!(close(r.rpm, 60.0, 1e-9));
 }
 
 #[test]
@@ -79,53 +100,21 @@ fn ratio_range_matches_fit_check() {
     assert_ne!(at(hi * 0.9999), Fit::Fail);
     assert_eq!(at(lo * 0.98), Fit::Fail);
     assert_eq!(at(hi * 1.02), Fit::Fail);
-    let slow = Actuator { rpm: 300.0, ..base };
-    assert!(ratio_range(&req, &slow).is_none()); // needs N ≥ 35 for torque but N ≤ 10 for speed
+    assert!(ratio_range(&req, &Actuator { rpm: 300.0, ..base }).is_none());
 }
 
 #[test]
-fn units_and_presets() {
+fn presets_are_consistent_and_fit() {
     assert!(close(nm_to_kgfcm(1.0), 10.197, 0.0001));
-    for p in ["desk_arm", "leg", "arm6"] {
-        let (links, axes, _, acts) = preset(p).unwrap();
-        assert_eq!(links.len(), acts.len());
-        assert_eq!(links.len(), axes.len());
-        assert!(links.len() <= MAX_JOINTS);
+    let m = Motion { alpha: 5.0, omega: 90f64.to_radians(), safety: 1.5 };
+    for name in ["desk_arm", "leg", "arm6", "arm7"] {
+        let (c, acts) = preset(name).unwrap();
+        assert_eq!(c.joints.len(), acts.len());
+        assert!(c.joints.len() <= MAX_JOINTS);
+        for (j, (l, a)) in requirements(&c, m).iter().zip(&acts).enumerate() {
+            assert_ne!(fit(&l.req, &output(a)), Fit::Fail, "{name} J{} {:?}", j + 1, l.req);
+        }
     }
+    assert_eq!(preset("arm7").unwrap().0.joints.len(), 7);
     assert!(preset("nope").is_none());
-}
-
-#[test]
-fn yaw_has_no_gravity_but_same_inertia() {
-    let links = [rod(0.5, 1.0), rod(0.5, 1.0)];
-    let m = Motion { alpha: 2.0, omega: 1.0, safety: 1.0 };
-    let pitch = requirements_axes(&links, &[Axis::Pitch, Axis::Pitch], 0.5, m, 0.05);
-    let yaw = requirements_axes(&links, &[Axis::Yaw, Axis::Pitch], 0.5, m, 0.05);
-    assert_eq!(yaw[0].gravity, 0.0);
-    assert!(close(yaw[0].inertia, pitch[0].inertia, 1e-12));
-    assert!(close(yaw[0].peak, pitch[0].inertia * 2.0, 1e-12));
-    assert_eq!(yaw[1], pitch[1]); // later joints are unaffected
-    assert_eq!(requirements(&links, 0.5, m), pitch); // default = all pitch
-}
-
-#[test]
-fn roll_lumps_distal_mass_at_offset() {
-    let links = [rod(0.3, 1.0), Link { length: 0.1, mass: 0.2, actuator_mass: 0.3 }];
-    let m = Motion { alpha: 10.0, omega: 1.0, safety: 1.0 };
-    let r = requirements_axes(&links, &[Axis::Pitch, Axis::Roll], 2.0, m, 0.1)[1];
-    let distal = 0.2 + 2.0; // link 2 + payload (its own actuator sits on the axis)
-    assert!(close(r.gravity, distal * G * 0.1, 1e-12));
-    assert!(close(r.inertia, distal * 0.01, 1e-12));
-}
-
-#[test]
-fn six_dof_arm_preset_fits_with_its_motors() {
-    let (links, axes, payload, acts) = preset("arm6").unwrap();
-    let reqs = requirements_axes(&links, &axes, payload, Motion { alpha: 5.0, omega: 90f64.to_radians(), safety: 1.5 }, DEFAULT_ROLL_OFFSET);
-    assert_eq!(reqs.len(), 6);
-    assert_eq!(reqs[0].gravity, 0.0); // base yaw
-    assert!(reqs[1].gravity > reqs[2].gravity && reqs[2].gravity > reqs[3].gravity); // shoulder > elbow > wrist
-    for (r, a) in reqs.iter().zip(&acts) {
-        assert_ne!(fit(r, &output(a)), Fit::Fail, "{r:?}");
-    }
 }

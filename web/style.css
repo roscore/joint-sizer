@@ -100,3 +100,7 @@ footer { color: var(--muted); font-size: 0.85rem; padding-bottom: 32px; }
 #rows input { width: 6.5em; }
 canvas { width: 100%; height: auto; max-width: 900px; display: block; }
 footer { color: var(--muted); font-size: 0.88rem; padding-bottom: 24px; }
+#rows select { min-width: 3.6em; }
+#rows input[id^="min"], #rows input[id^="max"] { width: 5em; }
+#result small { color: var(--muted); white-space: nowrap; }
+button.show { padding: 2px 8px; }
