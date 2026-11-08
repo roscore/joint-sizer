@@ -6,24 +6,23 @@
 
 ## 무엇을 하나요
 
-1. **링크 입력**: 관절 2~7개. 관절마다 회전축(피치·요·롤), 링크 길이·질량, 관절에 달린 액추에이터 질량, 끝단 하중을 넣어요. 예시로 "2관절 책상 로봇팔", "3자유도 다리", "6자유도 로봇팔(UR 방식)"이 들어 있어요.
-2. **관절별 요구값**: 팔을 수평으로 쭉 뻗은 최악 자세에서
-   - 중력 토크 (N·m 또는 kgf·cm)
-   - 관절 뒤쪽 전체의 관성 (평행축 정리)
-   - 필요한 연속 토크 = 중력 토크 × 안전율
-   - 필요한 최대 토크 = (중력 토크 + 관성 × 최대 각가속도) × 안전율
-   - 필요한 출력 속도 (rpm)
-3. **모터 적합 판정**: 모터의 연속·최대 토크, 속도, 감속비, 감속기 효율을 넣으면 출력 토크와 속도를 계산해서 ✅ 충분 / ⚠️ 빠듯(여유 10% 미만) / ❌ 부족으로 보여 줘요.
-4. **감속비 추천**: 그 모터로 토크와 속도를 모두 만족하는 감속비 범위를 알려 줘요. 범위가 없으면 더 센 모터나 더 빠른 모터가 필요하다는 뜻이에요.
+1. **3차원 로봇 입력**: 관절 1~7개. 관절마다 회전축(자기 좌표계의 X·Y·Z), 링크가 뻗는 방향(±X·±Y·±Z), 링크 길이·질량, 액추에이터 질량, 가동 범위(최소·최대 각도)를 넣어요. 끝단 하중과 공구 방향 편심도 넣을 수 있어요. 월드 Z축이 위쪽이에요.
+2. **예시**: 3자유도 책상 로봇팔, 4자유도 다리, 6자유도 로봇팔(UR 방식), 7자유도 로봇팔(Franka 방식).
+3. **최악 자세 탐색**: 관절마다 가동 범위 안의 자세를 수치 탐색해서
+   - 중력 토크가 가장 큰 자세 → 필요한 연속 토크 = 최대 중력 토크 × 안전율
+   - (중력 토크 + 관성 × 최대 각가속도)가 가장 큰 자세 → 필요한 최대 토크
+   - 관성은 관절 축에 대한 값이에요 (가는 막대 + 점질량, 평행축 정리).
+4. **모터 적합 판정**: 모터의 연속·최대 토크, 속도, 감속비, 감속기 효율을 넣으면 ✅ 충분 / ⚠️ 빠듯(여유 10% 미만) / ❌ 부족으로 보여 줘요.
+5. **감속비 추천**: 그 모터로 토크와 속도를 모두 만족하는 감속비 범위를 알려 줘요.
+6. **3D 보기**: 기본 자세나 관절별 최악 자세를 3D로 그려요. 시점을 돌려 볼 수 있어요.
 
 한국어/영어 전환, 휴대폰 화면, 다크 모드를 지원해요.
 
 ## 계산 가정 (한계)
 
-- 팔을 수평으로 쭉 뻗은 자세에서 계산해요. 링크는 균일한 막대, 액추에이터와 하중은 점질량으로 봐요.
-- 피치 관절(어깨·팔꿈치·손목 굽힘)은 중력 토크와 관성을 모두 받아요. 요 관절(베이스 회전)은 중력 토크 없이 관성만 받아요. 롤 관절(손목 회전)은 그 뒤 질량 전체가 "롤 관절 하중 편심"(기본 5 cm)만큼 떨어져 있다고 보고 근사해요.
-- 피치 관절만 있는 팔에서는 이 자세가 모든 관절의 중력 모멘트 팔과 관성이 가장 큰 최악 자세예요. 요·롤이 섞이면 자세에 따라 달라질 수 있어 근사값이에요.
-- 마찰, 백래시, 발열, 모터 회전자 관성, 듀티 사이클은 넣지 않았어요.
+- 링크는 가는 균일 막대, 액추에이터와 하중은 점질량으로 봐요.
+- 정역학 중력 토크 + 관절 축 관성 × 각가속도만 계산해요. 여러 관절이 함께 움직일 때 생기는 원심력·코리올리 힘, 마찰, 백래시, 발열, 모터 회전자 관성은 넣지 않았어요.
+- 최악 자세는 수치 탐색(격자 + 여러 시작점 + 국소 개선)으로 찾아요. 아주 특이한 구조에서는 실제 최악값보다 조금 작게 나올 수 있어요.
 - **추정값이에요. 실제 로봇에서 꼭 확인하세요.**
 
 ## 개인정보
@@ -47,13 +46,14 @@ trunk build --release   # dist/ 생성
 
 Use it: https://roscore.github.io/joint-sizer/
 
-- 2–7 revolute joints, each Pitch (gravity-loaded), Yaw (vertical axis) or Roll (along the arm): link length/mass, actuator mass at each joint, payload at the tip. Presets: 2-link desk arm, 3-DoF leg, 6-DoF UR-style arm.
-- Per joint, at the worst case (fully extended, horizontal): gravity torque, distal inertia (parallel axis), continuous torque = gravity × safety factor, peak torque = (gravity + I·α) × safety factor, and required output rpm.
-- Motor + gearbox check: output torque = motor torque × ratio × efficiency, output speed = motor rpm / ratio, shown as ✅ OK / ⚠️ Tight (< 10 % headroom) / ❌ Too weak.
-- Gear ratio finder: the range of ratios that satisfies both torque and speed for the given motor.
+- 3D serial chain, 1–7 revolute joints. Each joint rotates about X, Y or Z of its own frame; its link points along ±X/±Y/±Z of that frame. Link length/mass, actuator mass, joint limits, tip payload with a tool-Z offset. World Z is up.
+- Presets: 3-DoF desk arm, 4-DoF leg, 6-DoF UR-style arm, 7-DoF Franka-style arm.
+- Worst-pose search per joint inside the joint limits: max gravity torque (→ continuous requirement) and max gravity + I·α (→ peak requirement), inertia taken about the joint axis.
+- Motor + gearbox check (✅ / ⚠️ < 10 % headroom / ❌) and the gear-ratio range that satisfies torque and speed.
+- 3D view of the home pose or each joint's worst pose, rotatable.
 - Korean/English, mobile friendly, dark mode follows the system.
 
-**Assumptions:** chain evaluated fully extended and horizontal; yaw joints get inertia only; roll joints lump the distal mass at a user offset (default 5 cm); rigid uniform links, point-mass actuators and payload, no friction, backlash, heating, rotor inertia or duty cycle. Estimates only — verify on real hardware.
+**Assumptions:** thin uniform rods, point-mass actuators and payload; static gravity + axis inertia × α only (no Coriolis/centrifugal coupling, friction, backlash, heating, rotor inertia); the worst pose is found numerically. Estimates only — verify on real hardware.
 
 **Privacy:** everything runs client-side. No server, no analytics, no external requests (blocked by CSP). Only the language choice is kept in localStorage.
 
