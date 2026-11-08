@@ -3,39 +3,28 @@
 Original open-source tool. Write all code yourself; do not copy anyone's code, tables or assets.
 Use textbook rigid-body statics/dynamics only. No vendor motor databases — users type their own specs.
 
-## Product
-A single-page web app (GitHub Pages, sub-path `/joint-sizer/`) for hobby/research roboticists who ask
-"which motor + gearbox does this arm / leg joint need?".
+## Product (SMALL scope — keep the whole tool ~400-800 lines of Rust)
+A single-page web app (GitHub Pages, sub-path `/joint-sizer/`): "which motor + gearbox does this joint need?"
 
-1. **Planar serial chain model** (2–6 revolute joints, vertical plane, gravity -Y):
-   per link: length (m), link mass (kg, uniform rod by default or custom COM offset), joint/actuator mass
-   placed at the joint (kg). Payload mass at the end effector (kg). Joint angles (deg) per joint with
-   sliders, plus a "worst case" button (all links horizontal = max gravity moment).
-   Presets: "2-link desk arm", "3-DoF humanoid leg (hip/knee/ankle)", "6-joint arm (planar projection)".
-   Draw the chain to scale on a canvas (links, joints, COM dots, payload), draggable angle handles optional.
-2. **Per-joint load**: static gravity torque (N·m) at the current pose and the worst case; inertia about the
-   joint of everything distal (kg·m², parallel axis, pose-dependent, report worst = fully extended);
-   dynamic torque = τ_gravity + I·α for a user-given peak angular acceleration (rad/s² or "reach speed ω in
-   t seconds" helper); required output speed (rpm) from a given max ω. Safety factor input (default 1.5).
-3. **Actuator check** per joint: user enters motor rated (continuous) torque, peak torque, no-load or rated
-   speed (rpm), gear ratio, gearbox efficiency (default 0.85), optional motor rotor inertia (reflected
-   inertia = J_rotor·N²). Output: available output continuous/peak torque, output speed, fits? (✅/⚠️/❌),
-   headroom %, torque-margin bar chart, mechanical power at output (W). "Suggest ratio" finder: range of gear
-   ratios that satisfy both torque (peak with SF) and speed requirements; show "no ratio works" if empty.
-   Optional duty cycle (fraction of time at peak) → RMS torque vs continuous rating.
-4. Korean + English UI toggle (default follows browser language). Mobile friendly. Dark/light follows
-   system. Units: SI, with optional kgf·cm display for torque (common in hobby servo specs).
-   State shareable via URL fragment (#s=...), never sent to a server. Copy-result button (plain text
-   summary). JSON export/import of the whole model (download/upload file locally).
+1. **Planar chain, 2–4 revolute joints** (vertical plane, gravity -Y): per link length (m), link mass (kg,
+   uniform rod), actuator mass at the joint (kg); payload at the tip (kg). Worst case = all links horizontal
+   (no pose sliders). Two presets: "2-link desk arm", "3-DoF leg". Simple canvas drawing of the extended chain.
+2. **Per-joint requirement**: worst-case gravity torque, distal inertia (parallel axis), dynamic torque
+   τ = τ_g + I·α for a user peak α (rad/s²), required output rpm from max ω, safety factor (default 1.5).
+3. **Actuator check**: user enters motor continuous + peak torque, speed (rpm), gear ratio, efficiency
+   (default 0.85). Output per joint: ✅/⚠️/❌ with headroom %, plus a "suggest ratio" range (torque & speed).
+4. Korean + English toggle (browser default). Mobile friendly. Optional kgf·cm display.
+Out of scope (do NOT build): pose sliders, duty-cycle RMS, reflected rotor inertia, URL share, JSON
+import/export, copy button, dark-mode logic beyond CSS prefers-color-scheme.
 
 ## Core crate (pure Rust, no web deps, unit tested) — `crates/js_core`
 - Forward kinematics, COM positions, gravity torque per joint, distal inertia (parallel axis),
-  dynamic torque, reflected inertia, actuator fit check, ratio range solver, RMS duty torque, unit conversion.
+  dynamic torque, actuator fit check, ratio range solver, unit conversion.
 - Tests (all hand-computable): single 1 m link, 2 kg uniform rod, horizontal → 9.80665 N·m (±0.1%);
   same link vertical → ~0; 2-link horizontal with payload 1 kg at 0.5+0.5 m: base torque = sum of m·g·x;
   elbow torque only counts distal masses; inertia of uniform rod about end = m·L²/3; point mass m·r²;
-  worst case ≥ any sampled pose (property-style test over a grid); gear ratio scales torque by N·η and speed
-  by 1/N; reflected inertia = J·N²; ratio solver returns a range consistent with the fit check
+  gear ratio scales torque by N·η and speed
+  by 1/N; ratio solver returns a range consistent with the fit check
   (endpoints pass, outside fails) and empty when impossible; 1 N·m = 10.197 kgf·cm.
 - `crates/js_web`: UI. Prefer plain web-sys — keep the bundle small.
 
