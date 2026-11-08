@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/joint-sizer/"
+filehash = false
+# No inline bootstrap script: the page loads web/boot.js, which imports js_web.js.
+pattern_script = "<script type=\"module\" src=\"{base}boot.js\"></script>"

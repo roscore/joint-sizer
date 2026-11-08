@@ -1,0 +1,9 @@
+[package]
+name = "js_core"
+description = "Planar robot joint torque, inertia and actuator fit math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

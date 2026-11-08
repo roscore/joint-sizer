@@ -1,0 +1,22 @@
+[package]
+name = "js_web"
+description = "Browser UI for joint-sizer (WebAssembly, web-sys)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+js_core = { path = "../js_core" }
+wasm-bindgen = "0.2"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement",
+  "HtmlCanvasElement", "CanvasRenderingContext2d", "Event", "EventTarget", "Navigator",
+  "Storage", "NodeList", "MediaQueryList",
+]

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Robot joint torque and gear ratio calculator: gravity torque, inertia, motor and gearbox fit for a planar arm or leg.">
+<title>joint-sizer</title>
+<link data-trunk rel="rust" href="crates/js_web/Cargo.toml" data-type="main" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue">
+<link data-trunk rel="css" href="web/style.css">
+<link data-trunk rel="copy-file" href="web/boot.js">
+<link data-trunk rel="copy-file" href="web/favicon.svg">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header>
+  <div>
+    <h1 data-i18n="title">Robot joint torque &amp; gear ratio calculator</h1>
+    <p class="sub" data-i18n="subtitle"></p>
+  </div>
+  <button id="lang" type="button" class="ghost" data-i18n="lang">한국어</button>
+</header>
+<noscript><p class="warn">This calculator needs JavaScript and WebAssembly. 이 계산기는 JavaScript와 WebAssembly가 필요합니다.</p></noscript>
+<main id="app">
+<section class="card">
+  <h2 data-i18n="sec_chain">Chain</h2>
+  <div class="grid">
+    <label><span data-i18n="preset">Preset</span>
+      <select id="preset">
+        <option value="desk_arm" data-i18n="p_desk_arm">2-link desk arm</option>
+        <option value="leg" data-i18n="p_leg">3-DoF leg</option>
+        <option value="custom" data-i18n="p_custom">Custom</option>
+      </select></label>
+    <label><span data-i18n="joints">Joints</span>
+      <select id="joints"><option>2</option><option>3</option><option>4</option></select></label>
+    <label><span data-i18n="payload">Payload at tip (kg)</span>
+      <input id="payload" type="number" inputmode="decimal" step="any" min="0" value="0.5"></label>
+  </div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_motion">Motion targets</h2>
+  <div class="grid">
+    <label><span data-i18n="alpha">Peak angular acceleration (rad/s²)</span>
+      <input id="alpha" type="number" inputmode="decimal" step="any" min="0" value="5"></label>
+    <label><span data-i18n="omega">Max joint speed (deg/s)</span>
+      <input id="omega" type="number" inputmode="decimal" step="any" min="0" value="90"></label>
+    <label><span data-i18n="safety">Safety factor</span>
+      <input id="safety" type="number" inputmode="decimal" step="0.1" min="1" value="1.5"></label>
+    <label><span data-i18n="unit">Torque unit</span>
+      <select id="unit"><option value="nm">N·m</option><option value="kgfcm">kgf·cm</option></select></label>
+  </div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_links">Links and actuators</h2>
+  <div class="table-wrap"><table id="rows"></table></div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_result">Result per joint</h2>
+  <div class="table-wrap"><table id="result"></table></div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_view">Chain (fully extended)</h2>
+  <canvas id="view" width="900" height="200"></canvas>
+</section>
+</main>
+<footer><p data-i18n="note"></p></footer>
+</body>
+</html>
