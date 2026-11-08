@@ -86,9 +86,46 @@ fn ratio_range_matches_fit_check() {
 #[test]
 fn units_and_presets() {
     assert!(close(nm_to_kgfcm(1.0), 10.197, 0.0001));
-    for p in ["desk_arm", "leg"] {
-        let (links, _, acts) = preset(p).unwrap();
+    for p in ["desk_arm", "leg", "arm6"] {
+        let (links, axes, _, acts) = preset(p).unwrap();
         assert_eq!(links.len(), acts.len());
+        assert_eq!(links.len(), axes.len());
+        assert!(links.len() <= MAX_JOINTS);
     }
     assert!(preset("nope").is_none());
+}
+
+#[test]
+fn yaw_has_no_gravity_but_same_inertia() {
+    let links = [rod(0.5, 1.0), rod(0.5, 1.0)];
+    let m = Motion { alpha: 2.0, omega: 1.0, safety: 1.0 };
+    let pitch = requirements_axes(&links, &[Axis::Pitch, Axis::Pitch], 0.5, m, 0.05);
+    let yaw = requirements_axes(&links, &[Axis::Yaw, Axis::Pitch], 0.5, m, 0.05);
+    assert_eq!(yaw[0].gravity, 0.0);
+    assert!(close(yaw[0].inertia, pitch[0].inertia, 1e-12));
+    assert!(close(yaw[0].peak, pitch[0].inertia * 2.0, 1e-12));
+    assert_eq!(yaw[1], pitch[1]); // later joints are unaffected
+    assert_eq!(requirements(&links, 0.5, m), pitch); // default = all pitch
+}
+
+#[test]
+fn roll_lumps_distal_mass_at_offset() {
+    let links = [rod(0.3, 1.0), Link { length: 0.1, mass: 0.2, actuator_mass: 0.3 }];
+    let m = Motion { alpha: 10.0, omega: 1.0, safety: 1.0 };
+    let r = requirements_axes(&links, &[Axis::Pitch, Axis::Roll], 2.0, m, 0.1)[1];
+    let distal = 0.2 + 2.0; // link 2 + payload (its own actuator sits on the axis)
+    assert!(close(r.gravity, distal * G * 0.1, 1e-12));
+    assert!(close(r.inertia, distal * 0.01, 1e-12));
+}
+
+#[test]
+fn six_dof_arm_preset_fits_with_its_motors() {
+    let (links, axes, payload, acts) = preset("arm6").unwrap();
+    let reqs = requirements_axes(&links, &axes, payload, Motion { alpha: 5.0, omega: 90f64.to_radians(), safety: 1.5 }, DEFAULT_ROLL_OFFSET);
+    assert_eq!(reqs.len(), 6);
+    assert_eq!(reqs[0].gravity, 0.0); // base yaw
+    assert!(reqs[1].gravity > reqs[2].gravity && reqs[2].gravity > reqs[3].gravity); // shoulder > elbow > wrist
+    for (r, a) in reqs.iter().zip(&acts) {
+        assert_ne!(fit(r, &output(a)), Fit::Fail, "{r:?}");
+    }
 }

@@ -6,7 +6,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="Robot joint torque and gear ratio calculator: gravity torque, inertia, motor and gearbox fit for a planar arm or leg.">
+<meta name="description" content="Robot joint torque and gear ratio calculator: gravity torque, inertia, motor and gearbox fit for arms and legs up to 7 joints.">
 <title>joint-sizer</title>
 <link data-trunk rel="rust" href="crates/js_web/Cargo.toml" data-type="main" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue">
 <link data-trunk rel="css" href="web/style.css">
@@ -31,10 +31,11 @@
       <select id="preset">
         <option value="desk_arm" data-i18n="p_desk_arm">2-link desk arm</option>
         <option value="leg" data-i18n="p_leg">3-DoF leg</option>
+        <option value="arm6" data-i18n="p_arm6">6-DoF arm</option>
         <option value="custom" data-i18n="p_custom">Custom</option>
       </select></label>
     <label><span data-i18n="joints">Joints</span>
-      <select id="joints"><option>2</option><option>3</option><option>4</option></select></label>
+      <select id="joints"><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select></label>
     <label><span data-i18n="payload">Payload at tip (kg)</span>
       <input id="payload" type="number" inputmode="decimal" step="any" min="0" value="0.5"></label>
   </div>
@@ -48,6 +49,8 @@
       <input id="omega" type="number" inputmode="decimal" step="any" min="0" value="90"></label>
     <label><span data-i18n="safety">Safety factor</span>
       <input id="safety" type="number" inputmode="decimal" step="0.1" min="1" value="1.5"></label>
+    <label><span data-i18n="roll_off">Roll joint load offset (m)</span>
+      <input id="roll_off" type="number" inputmode="decimal" step="0.01" min="0" value="0.05"></label>
     <label><span data-i18n="unit">Torque unit</span>
       <select id="unit"><option value="nm">N·m</option><option value="kgfcm">kgf·cm</option></select></label>
   </div>

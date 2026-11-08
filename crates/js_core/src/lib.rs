@@ -35,6 +35,37 @@ pub struct Actuator {
     pub efficiency: f64,
 }
 
+/// Orientation of a joint axis when the chain is fully extended along +X.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    /// Horizontal axis, perpendicular to the arm (shoulder, elbow, knee). Gravity-loaded.
+    Pitch,
+    /// Vertical axis (base turntable, wrist yaw). No gravity torque, full swing inertia.
+    Yaw,
+    /// Axis along the arm (forearm / wrist roll). Loaded only through the roll offset.
+    Roll,
+}
+
+impl Axis {
+    pub fn code(self) -> &'static str {
+        match self {
+            Axis::Pitch => "pitch",
+            Axis::Yaw => "yaw",
+            Axis::Roll => "roll",
+        }
+    }
+    pub fn from_code(s: &str) -> Axis {
+        match s {
+            "yaw" => Axis::Yaw,
+            "roll" => Axis::Roll,
+            _ => Axis::Pitch,
+        }
+    }
+}
+
+/// Default distance of the distal centre of mass from a roll axis, m (gripper / tool offset).
+pub const DEFAULT_ROLL_OFFSET: f64 = 0.05;
+
 /// Default gearbox efficiency.
 pub const DEFAULT_EFFICIENCY: f64 = 0.85;
 
@@ -140,24 +171,47 @@ pub struct Requirement {
     pub rpm: f64,
 }
 
-/// Worst case = fully extended horizontal chain (all angles 0), which maximises both the gravity
-/// moment arm and the distal inertia for every joint.
+/// Worst case for an all-pitch chain = fully extended horizontal (all angles 0), which maximises
+/// both the gravity moment arm and the distal inertia for every joint.
 pub fn requirements(links: &[Link], payload: f64, motion: Motion) -> Vec<Requirement> {
+    requirements_axes(links, &[], payload, motion, DEFAULT_ROLL_OFFSET)
+}
+
+/// Requirements with a per-joint axis type (missing entries = Pitch), fully extended chain.
+/// - Pitch: gravity torque and inertia about a horizontal axis.
+/// - Yaw: no gravity torque; same swing inertia (distances lie in the horizontal plane).
+/// - Roll: everything distal is lumped at `roll_offset` from the axis (worst case horizontal):
+///   torque = m·g·r, inertia = m·r². An approximation for wrists and tools.
+pub fn requirements_axes(links: &[Link], axes: &[Axis], payload: f64, motion: Motion, roll_offset: f64) -> Vec<Requirement> {
     let zeros = vec![0.0; links.len()];
     let tg = gravity_torques(links, &zeros, payload);
     let inertia = distal_inertias(links, &zeros, payload);
+    let (_, ms) = masses(links, &zeros, payload);
     let rpm = rad_s_to_rpm(motion.omega);
-    tg.iter()
-        .zip(&inertia)
-        .map(|(&g, &i)| Requirement {
-            gravity: g,
-            inertia: i,
-            cont: g * motion.safety,
-            peak: (g + i * motion.alpha) * motion.safety,
-            rpm,
+    let r = roll_offset.max(0.0);
+    (0..links.len())
+        .map(|j| {
+            let (g, i) = match axes.get(j).copied().unwrap_or(Axis::Pitch) {
+                Axis::Pitch => (tg[j], inertia[j]),
+                Axis::Yaw => (0.0, inertia[j]),
+                Axis::Roll => {
+                    let m: f64 = ms.iter().filter(|m| m.distal_of >= j).map(|m| m.m).sum();
+                    (m * G * r, m * r * r)
+                }
+            };
+            Requirement {
+                gravity: g,
+                inertia: i,
+                cont: g * motion.safety,
+                peak: (g + i * motion.alpha) * motion.safety,
+                rpm,
+            }
         })
         .collect()
 }
+
+/// Maximum number of joints supported by the UI.
+pub const MAX_JOINTS: usize = 7;
 
 /// Output side of a motor + gearbox.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -221,20 +275,47 @@ pub fn nm_to_kgfcm(t: f64) -> f64 {
     t * 100.0 / G
 }
 
+/// A ready-made chain: links, axis per joint, payload, actuator per joint.
+pub type Preset = (Vec<Link>, Vec<Axis>, f64, Vec<Actuator>);
+
 /// Example chains.
-pub fn preset(name: &str) -> Option<(Vec<Link>, f64, Vec<Actuator>)> {
+pub fn preset(name: &str) -> Option<Preset> {
+    use Axis::*;
     let act = |c, p, rpm, n, e| Actuator { cont_torque: c, peak_torque: p, rpm, ratio: n, efficiency: e };
     let l = |length, mass, actuator_mass| Link { length, mass, actuator_mass };
     match name {
         "desk_arm" => Some((
             vec![l(0.25, 0.3, 0.4), l(0.20, 0.2, 0.3)],
+            vec![Pitch, Pitch],
             0.5,
             vec![act(0.3, 0.9, 3000.0, 50.0, 0.85), act(0.15, 0.45, 3000.0, 50.0, 0.85)],
         )),
         "leg" => Some((
             vec![l(0.40, 3.0, 1.0), l(0.40, 2.0, 0.8), l(0.10, 0.5, 0.5)],
+            vec![Pitch, Pitch, Pitch],
             0.0,
             vec![act(6.0, 18.0, 300.0, 9.0, 0.9), act(6.0, 18.0, 300.0, 9.0, 0.9), act(1.5, 4.5, 300.0, 9.0, 0.9)],
+        )),
+        // UR-style 6-DoF arm: base yaw, shoulder / elbow / wrist pitch, wrist yaw, tool roll.
+        "arm6" => Some((
+            vec![
+                l(0.05, 0.5, 1.2),
+                l(0.30, 1.2, 0.9),
+                l(0.25, 0.8, 0.7),
+                l(0.08, 0.3, 0.4),
+                l(0.08, 0.3, 0.4),
+                l(0.05, 0.1, 0.3),
+            ],
+            vec![Yaw, Pitch, Pitch, Pitch, Yaw, Roll],
+            1.0,
+            vec![
+                act(1.0, 3.0, 3000.0, 100.0, 0.8),
+                act(1.0, 3.0, 3000.0, 100.0, 0.8),
+                act(0.6, 1.8, 3000.0, 100.0, 0.8),
+                act(0.2, 0.6, 3000.0, 100.0, 0.8),
+                act(0.2, 0.6, 3000.0, 100.0, 0.8),
+                act(0.2, 0.6, 3000.0, 100.0, 0.8),
+            ],
         )),
         _ => None,
     }

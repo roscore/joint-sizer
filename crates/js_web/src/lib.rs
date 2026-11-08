@@ -16,13 +16,19 @@ fn ko() -> bool {
 /// (key, English, Korean)
 const TEXT: &[(&str, &str, &str)] = &[
     ("title", "Robot joint torque & gear ratio calculator", "로봇 관절 토크·감속비 계산기"),
-    ("subtitle", "Which motor and gearbox does each joint need? Planar chain, worst case = fully extended and horizontal.",
-     "관절마다 어떤 모터와 감속기가 필요할까요? 평면 링크 기준, 최악 조건은 팔을 수평으로 쭉 뻗은 자세예요."),
+    ("subtitle", "Which motor and gearbox does each joint need? Up to 7 joints (pitch / yaw / roll), worst case = fully extended and horizontal.",
+     "관절마다 어떤 모터와 감속기가 필요할까요? 관절 최대 7개(피치·요·롤), 최악 조건은 팔을 수평으로 쭉 뻗은 자세예요."),
     ("sec_chain", "Chain", "링크 구성"),
     ("preset", "Preset", "예시"),
     ("p_custom", "Custom", "직접 입력"),
     ("p_desk_arm", "2-link desk arm", "2관절 책상 로봇팔"),
     ("p_leg", "3-DoF leg (hip / knee / ankle)", "3자유도 다리 (고관절·무릎·발목)"),
+    ("p_arm6", "6-DoF arm (UR-style)", "6자유도 로봇팔 (UR 방식)"),
+    ("h_axis", "Axis", "회전축"),
+    ("ax_pitch", "Pitch (gravity)", "피치 (중력 받음)"),
+    ("ax_yaw", "Yaw (vertical)", "요 (수직축)"),
+    ("ax_roll", "Roll (along arm)", "롤 (팔 방향)"),
+    ("roll_off", "Roll joint load offset (m)", "롤 관절 하중 편심 (m)"),
     ("joints", "Joints", "관절 수"),
     ("payload", "Payload at tip (kg)", "끝단 하중 (kg)"),
     ("sec_motion", "Motion targets", "동작 목표"),
@@ -105,15 +111,21 @@ const COLS: [(&str, &str); 8] = [
 ];
 
 /// Rebuild the per-joint input table with the given values.
-fn build_rows(links: &[Link], acts: &[Actuator]) {
-    let mut h = String::from("<thead><tr><th data-i18n=\"h_joint\"></th>");
+fn build_rows(links: &[Link], axes: &[Axis], acts: &[Actuator]) {
+    let mut h = String::from("<thead><tr><th data-i18n=\"h_joint\"></th><th data-i18n=\"h_axis\"></th>");
     for (_, key) in COLS {
         h.push_str(&format!("<th data-i18n=\"{key}\"></th>"));
     }
     h.push_str("</tr></thead><tbody>");
     for (i, (l, a)) in links.iter().zip(acts).enumerate() {
         let vals = [l.length, l.mass, l.actuator_mass, a.cont_torque, a.peak_torque, a.rpm, a.ratio, a.efficiency];
-        h.push_str(&format!("<tr><td>J{}</td>", i + 1));
+        h.push_str(&format!("<tr><td>J{}</td><td><select id=\"ax{i}\">", i + 1));
+        let cur = axes.get(i).copied().unwrap_or(Axis::Pitch);
+        for a in [Axis::Pitch, Axis::Yaw, Axis::Roll] {
+            let sel = if a == cur { " selected" } else { "" };
+            h.push_str(&format!("<option value=\"{0}\"{sel} data-i18n=\"ax_{0}\"></option>", a.code()));
+        }
+        h.push_str("</select></td>");
         for ((col, _), v) in COLS.iter().zip(vals) {
             h.push_str(&format!(
                 "<td><input id=\"{col}{i}\" type=\"number\" inputmode=\"decimal\" step=\"any\" min=\"0\" value=\"{v}\"></td>"
@@ -126,11 +138,13 @@ fn build_rows(links: &[Link], acts: &[Actuator]) {
     apply_text();
 }
 
-fn read_rows(n: usize) -> (Vec<Link>, Vec<Actuator>) {
+fn read_rows(n: usize) -> (Vec<Link>, Vec<Axis>, Vec<Actuator>) {
+    let mut axes = Vec::new();
     let mut links = Vec::new();
     let mut acts = Vec::new();
     for i in 0..n {
         let g = |c: &str, d: f64| num(&format!("{c}{i}"), d).max(0.0);
+        axes.push(select(&format!("ax{i}")).map(|s| Axis::from_code(&s.value())).unwrap_or(Axis::Pitch));
         links.push(Link { length: g("len", 0.3), mass: g("mass", 0.5), actuator_mass: g("act", 0.3) });
         acts.push(Actuator {
             cont_torque: g("cont", 1.0),
@@ -140,11 +154,11 @@ fn read_rows(n: usize) -> (Vec<Link>, Vec<Actuator>) {
             efficiency: g("eff", DEFAULT_EFFICIENCY).min(1.0),
         });
     }
-    (links, acts)
+    (links, axes, acts)
 }
 
 fn joint_count() -> usize {
-    select("joints").and_then(|s| s.value().parse().ok()).unwrap_or(2).clamp(2, 4)
+    select("joints").and_then(|s| s.value().parse().ok()).unwrap_or(2).clamp(2, MAX_JOINTS)
 }
 
 fn fmt_t(v: f64, kgf: bool) -> String {
@@ -153,7 +167,7 @@ fn fmt_t(v: f64, kgf: bool) -> String {
 
 fn recompute() {
     let n = joint_count();
-    let (links, acts) = read_rows(n);
+    let (links, axes, acts) = read_rows(n);
     let payload = num("payload", 0.0).max(0.0);
     let motion = Motion {
         alpha: num("alpha", 5.0).max(0.0),
@@ -162,7 +176,8 @@ fn recompute() {
     };
     let kgf = select("unit").map(|s| s.value() == "kgfcm").unwrap_or(false);
     let u = if kgf { "kgf·cm" } else { "N·m" };
-    let reqs = requirements(&links, payload, motion);
+    let roll = num("roll_off", DEFAULT_ROLL_OFFSET).max(0.0);
+    let reqs = requirements_axes(&links, &axes, payload, motion, roll);
 
     let mut h = format!(
         "<thead><tr><th data-i18n=\"h_joint\"></th><th><span data-i18n=\"r_grav\"></span> ({u})</th><th data-i18n=\"r_inertia\"></th>\
@@ -193,10 +208,10 @@ fn recompute() {
     h.push_str("</tbody>");
     set_html("result", &h);
     apply_text();
-    draw(&links, payload);
+    draw(&links, &axes, payload);
 }
 
-fn draw(links: &[Link], payload: f64) {
+fn draw(links: &[Link], axes: &[Axis], payload: f64) {
     let Some(c) = doc().get_element_by_id("view").and_then(|e| e.dyn_into::<HtmlCanvasElement>().ok()) else { return };
     let Ok(Some(ctx)) = c.get_context("2d") else { return };
     let ctx: CanvasRenderingContext2d = ctx.dyn_into().unwrap();
@@ -226,7 +241,12 @@ fn draw(links: &[Link], payload: f64) {
         ctx.begin_path();
         ctx.arc(x, oy, 8.0, 0.0, std::f64::consts::TAU).ok();
         ctx.fill();
-        ctx.fill_text(&format!("J{}", k + 1), x - 7.0, oy - 14.0).ok();
+        let tag = match axes.get(k).copied().unwrap_or(Axis::Pitch) {
+            Axis::Pitch => "",
+            Axis::Yaw => "↻",
+            Axis::Roll => "⟲",
+        };
+        ctx.fill_text(&format!("J{}{tag}", k + 1), x - 7.0, if k % 2 == 0 { oy - 14.0 } else { oy + 24.0 }).ok();
     }
     let tip = ox + pts[links.len()].0 * s;
     if payload > 0.0 {
@@ -239,29 +259,31 @@ fn draw(links: &[Link], payload: f64) {
 }
 
 fn load_preset(name: &str) {
-    if let Some((links, payload, acts)) = preset(name) {
+    if let Some((links, axes, payload, acts)) = preset(name) {
         if let Some(s) = select("joints") {
             s.set_value(&links.len().to_string());
         }
         if let Some(p) = input("payload") {
             p.set_value(&payload.to_string());
         }
-        build_rows(&links, &acts);
+        build_rows(&links, &axes, &acts);
     }
 }
 
 /// Keep existing row values when the joint count changes; new joints copy the last one.
 fn resize_rows() {
     let n = joint_count();
-    let have = (0..4).take_while(|i| input(&format!("len{i}")).is_some()).count();
-    let (mut links, mut acts) = read_rows(have.max(1));
+    let have = (0..MAX_JOINTS).take_while(|i| input(&format!("len{i}")).is_some()).count();
+    let (mut links, mut axes, mut acts) = read_rows(have.max(1));
     while links.len() < n {
         links.push(*links.last().unwrap());
+        axes.push(*axes.last().unwrap());
         acts.push(*acts.last().unwrap());
     }
     links.truncate(n);
+    axes.truncate(n);
     acts.truncate(n);
-    build_rows(&links, &acts);
+    build_rows(&links, &axes, &acts);
 }
 
 fn on(id: &str, ev: &str, f: impl FnMut(web_sys::Event) + 'static) {
@@ -317,7 +339,7 @@ pub fn start() {
     on("app", "input", |e| {
         let id = e.target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()).map(|el| el.id()).unwrap_or_default();
         if id != "preset" && id != "joints" {
-            if COLS.iter().any(|(c, _)| id.starts_with(c)) || id == "payload" {
+            if COLS.iter().any(|(c, _)| id.starts_with(c)) || id.starts_with("ax") || id == "payload" {
                 if let Some(s) = select("preset") {
                     s.set_value("custom");
                 }
