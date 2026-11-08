@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Robot joint torque and gear ratio calculator: gravity torque, inertia, motor and gearbox fit for 3D arms and legs up to 7 joints, with worst-pose search inside joint limits.">
+<title>joint-sizer</title>
+<script type="module" src="/joint-sizer/boot.js"></script>
+<link rel="stylesheet" href="/joint-sizer/style.css" integrity="sha384-6rSg0enCGFzg/WumByW7dYDKAkSic3pw+ae5ta739ebCUsyZSykheAEfy6Voh2zF"/>
+
+
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="modulepreload" href="/joint-sizer/js_web.js" crossorigin="anonymous" integrity="sha384-tPT9ORej8/KyjU4Kk8OzcpdPf7gc/Q1nfTpOB1jDs9kMf+xa0Oi3R26d5gyJeNLk"><link rel="preload" href="/joint-sizer/js_web_bg.wasm" crossorigin="anonymous" integrity="sha384-sw/BpkyTb4mIOCBsj1xeLQ0SNNZTRTg4AN8mwVbdw3eJylkucPjc5ZaEsTWTid0y" as="fetch" type="application/wasm"></head>
+<body>
+<header>
+  <div>
+    <h1 data-i18n="title">Robot joint torque &amp; gear ratio calculator</h1>
+    <p class="sub" data-i18n="subtitle"></p>
+  </div>
+  <button id="lang" type="button" class="ghost" data-i18n="lang">한국어</button>
+</header>
+<noscript><p class="warn">This calculator needs JavaScript and WebAssembly. 이 계산기는 JavaScript와 WebAssembly가 필요합니다.</p></noscript>
+<main id="app">
+<section class="card">
+  <h2 data-i18n="sec_chain">Chain</h2>
+  <div class="grid">
+    <label><span data-i18n="preset">Preset</span>
+      <select id="preset">
+        <option value="desk_arm" data-i18n="p_desk_arm">3-DoF desk arm</option>
+        <option value="leg" data-i18n="p_leg">4-DoF leg</option>
+        <option value="arm6" data-i18n="p_arm6">6-DoF arm</option>
+        <option value="arm7" data-i18n="p_arm7">7-DoF arm</option>
+        <option value="custom" data-i18n="p_custom">Custom</option>
+      </select></label>
+    <label><span data-i18n="joints">Joints</span>
+      <select id="joints"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option></select></label>
+    <label><span data-i18n="payload">Payload (kg)</span>
+      <input id="payload" type="number" inputmode="decimal" step="any" min="0" value="1"></label>
+    <label><span data-i18n="payload_off">Payload offset along tool Z (m)</span>
+      <input id="payload_off" type="number" inputmode="decimal" step="0.01" value="0"></label>
+  </div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_motion">Motion targets</h2>
+  <div class="grid">
+    <label><span data-i18n="alpha">Peak angular acceleration (rad/s²)</span>
+      <input id="alpha" type="number" inputmode="decimal" step="any" min="0" value="5"></label>
+    <label><span data-i18n="omega">Max joint speed (deg/s)</span>
+      <input id="omega" type="number" inputmode="decimal" step="any" min="0" value="90"></label>
+    <label><span data-i18n="safety">Safety factor</span>
+      <input id="safety" type="number" inputmode="decimal" step="0.1" min="1" value="1.5"></label>
+    <label><span data-i18n="unit">Torque unit</span>
+      <select id="unit"><option value="nm">N·m</option><option value="kgfcm">kgf·cm</option></select></label>
+  </div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_links">Joints, links and actuators</h2>
+  <p class="sub" data-i18n="help_frames"></p>
+  <div class="table-wrap"><table id="rows"></table></div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_result">Result per joint</h2>
+  <div class="table-wrap"><table id="result"></table></div>
+</section>
+<section class="card">
+  <h2 data-i18n="sec_view">3D view</h2>
+  <div class="grid">
+    <label><span data-i18n="view_pose">Pose</span> <select id="view_pose"></select></label>
+    <label><span data-i18n="yaw_view">Turn view (°)</span>
+      <input id="yaw_view" type="range" min="-180" max="180" step="5" value="35"></label>
+  </div>
+  <canvas id="view" width="900" height="480"></canvas>
+</section>
+</main>
+<footer><p data-i18n="note"></p></footer>
+</body>
+</html>
